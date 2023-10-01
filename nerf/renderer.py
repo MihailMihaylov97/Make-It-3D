@@ -126,7 +126,7 @@ class NeRFRenderer(nn.Module):
             self.mean_density = 0
             self.iter_density = 0
             # step counter
-            step_counter = torch.zeros(16, 2, dtype=torch.int32) # 16 is hardcoded for averaging...
+            step_counter = torch.zeros(10, 2, dtype=torch.int32) # 16 is hardcoded for averaging...
             self.register_buffer('step_counter', step_counter)
             self.mean_count = 0
             self.local_step = 0
@@ -458,7 +458,7 @@ class NeRFRenderer(nn.Module):
             bg_color = 1
             
         fg_image = image
-        bg_image = bg_color.view(*prefix, 3)
+        # bg_image = bg_color.view(*prefix, 3)
         fg_image = fg_image.view(*prefix, 3)
         
         image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
@@ -473,8 +473,8 @@ class NeRFRenderer(nn.Module):
         results['weights_sum'] = weights_sum
         results['mask'] = mask
         results['normal'] = normal_map
-        if self.bg_radius > 0:
-            results['bg'] = bg_image
+        # if self.bg_radius > 0:
+            # results['bg'] = bg_image
 
         return results
 
@@ -502,7 +502,7 @@ class NeRFRenderer(nn.Module):
 
         if self.training:
             # setup counter
-            counter = self.step_counter[self.local_step % 16]
+            counter = self.step_counter[self.local_step % 10]
             counter.zero_() # set to 0
             self.local_step += 1
             xyzs, dirs, deltas, rays = raymarching.march_rays_train(rays_o, rays_d, self.bound, self.density_bitfield, self.cascade, self.grid_size, nears, fars, counter, self.mean_count, perturb, 128, force_all_rays, dt_gamma, max_steps)        

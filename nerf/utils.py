@@ -203,7 +203,11 @@ class Trainer(object):
                  ref_imgs, 
                  ref_depth, 
                  ref_mask,
+                 ref_imgs_second, 
+                 ref_depth_second, 
+                 ref_mask_second,
                  ori_imgs=None,
+                 ori_imgs_second=None,
                  criterion=None, # loss function, if None, assume inline implementation in train_step
                  optimizer=None, # optimizer
                  ema_decay=None, # if use EMA, set the decay
@@ -250,6 +254,10 @@ class Trainer(object):
         self.ori_imgs = ori_imgs
         self.depth_prediction = ref_depth
         self.depth_mask = ref_mask
+        self.ref_imgs_second = ref_imgs_second
+        self.ori_imgs_second = ori_imgs_second
+        self.depth_prediction_second = ref_depth_second
+        self.depth_mask_second = ref_mask_second
     
         model.to(self.device)
         if self.world_size > 1:
@@ -290,6 +298,8 @@ class Trainer(object):
         self.criterion = criterion
         self.pearson = PearsonCorrCoef().to(self.device)
         
+        # self.guidance.to("cpu")
+        # torch.cuda.empty_cache()
 
         if optimizer is None:
             self.optimizer = optim.Adam(self.model.parameters(), lr=0.001, weight_decay=5e-4) # naive adam
@@ -492,10 +502,12 @@ class Trainer(object):
         bg_img = bg_color.expand(1, 512, 512, 3).permute(0, 3, 1, 2).contiguous()
         gt_rgb = ref_imgs[:, :3, :, :] * ref_imgs[:, 3:, :, :] + bg_img * (1 - ref_imgs[:, 3:, :, :])
 
+        # bg_color = bg_color.expand((self.opt.h*self.opt.w, bg_color.shape[0]))
+
         # _t = time.time()
         outputs = self.model.render(rays_o, rays_d, depth_scale=depth_scale, 
                             bg_color=bg_color, staged=False, perturb=True, ambient_ratio=ambient_ratio, 
-                            shading=shading, force_all_rays=True, **vars(self.opt))
+                            shading=shading, force_all_rays=False, **vars(self.opt))
         
         pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
         pred_depth = outputs['depth'].reshape(B, H, W, 1).permute(0, 3, 1, 2).contiguous() # [1, 1, H, W]
@@ -790,7 +802,9 @@ class Trainer(object):
         # refine stage optimization with SDS loss
         print("###### Optimization with SDS loss ######")
         K = torch.tensor((K), device=device).float()
-        gt_rgb = imageio.imread(image_path)/255.
+        gt_rgb = imageio.imread(image_path) / 255.
+        # gt_rgb = cv2.cvtColor(gt_rgb, cv2.COLOR_RGB2RGBA)/255.
+        # gt_rgb[-1] = 0
         gt_mask = cv2.resize(gt_rgb[:,:,3:],(H, W))        
         gt_rgb = cv2.resize(gt_rgb[:,:,:3],(H, W))
         gt_rgb = torch.Tensor(gt_rgb[None,...]).permute(0,3,1,2)

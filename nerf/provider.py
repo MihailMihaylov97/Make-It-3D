@@ -198,6 +198,10 @@ def fix_poses(size, index, device, radius_range=[1, 1.5], theta_range=[0, 100], 
     ], dim=-1) # [B, 3]
 
     targets = 0
+    # print("\n")
+    # print(f'centers: {centers}')
+    # print(f'thetas: {thetas}')
+    # print(f'phis: {phis}')
 
     # lookat
     forward_vector = safe_normalize(targets - centers)
@@ -303,6 +307,7 @@ class NeRFDataset:
             'rays_d': rays['rays_d'],
             'depth_scale': rays['depth_scale'],
             'is_front': is_front,
+            # 'is_back': is_front,
             'is_large': is_large,
             'poses': poses,
             'thetas': thetas, 

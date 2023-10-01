@@ -13,6 +13,52 @@ from PIL import Image
 
 # torch.autograd.set_detect_anomaly(True)
 
+
+def load_images_and_preprocess(ref_imgs, device):
+
+    # only support alpha photo input.
+    imgs = cv2.cvtColor(ref_imgs, cv2.COLOR_BGRA2RGBA)
+    imgs = cv2.resize(imgs, (512, 512), interpolation=cv2.INTER_AREA)
+    ref_imgs = (torch.from_numpy(imgs)/255.).unsqueeze(0).permute(0, 3, 1, 2).to(device)
+    ori_imgs = ref_imgs[:, :3, :, :] * ref_imgs[:, 3:, :, :] + (1 - ref_imgs[:, 3:, :, :])
+    return imgs, ref_imgs, ori_imgs
+
+
+def preprocess_mask(imgs):
+        mask = imgs[:, :, 3:]
+        # mask[mask < 0.5 * 255] = 0
+        # mask[mask >= 0.5 * 255] = 1 
+        kernel = np.ones(((5,5)), np.uint8) ##11
+        mask = cv2.erode(mask,kernel,iterations=1)
+        mask = (mask == 0)
+        mask = (torch.from_numpy(mask)).unsqueeze(0).unsqueeze(0).to(device)
+        depth_mask = mask
+        return depth_mask
+
+
+def get_depth_info(ori_imgs, depth_mask, name):
+    # depth estimation
+    with torch.no_grad():
+        depth_prediction = depth_model.forward(depth_transform(ori_imgs))
+        depth_prediction = torch.nn.functional.interpolate(
+            depth_prediction.unsqueeze(1),
+            size=512,
+            mode="bicubic",
+            align_corners=True,
+        ) # [1, 1, 512, 512] [80~150]
+        DPT.util.io.write_depth_name(os.path.join(opt.workspace, opt.text.replace(" ", "_") + '_depth' + f'_{name}'), depth_prediction.squeeze().cpu().numpy(), bits=2)
+        disparity = imageio.imread(os.path.join(opt.workspace, opt.text.replace(" ", "_") + '_depth' + f'_{name}.png')) / 65535.
+        disparity = median_filter(disparity, size=5)
+        depth = 1. / np.maximum(disparity, 1e-2)
+    
+    depth_prediction = torch.tensor(depth, device=device)
+    depth_mask = torch.tensor(depth_mask, device=device)
+    # normalize estimated depth
+    depth_prediction = depth_prediction * (~depth_mask) + torch.ones_like(depth_prediction) * (depth_mask)
+    depth_prediction = ((depth_prediction - 1.0) / (depth_prediction.max() - 1.0)) * 0.9 + 0.1
+    # save_image(ori_imgs, os.path.join(opt.workspace, opt.text.replace(" ", "_") + '_ref.png'))
+    return depth_mask, depth_prediction
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
@@ -153,23 +199,33 @@ if __name__ == '__main__':
         raise NotImplementedError(f'--guidance {opt.guidance} is not implemented.')
 
     ref_imgs = cv2.imread(opt.ref_path, cv2.IMREAD_UNCHANGED) # [H, W, 3] o [H, W, 4]
-    image_pil = Image.open(opt.ref_path).convert("RGB")
+    image_pil_original = Image.open(opt.ref_path).convert("RGB")
+
+    ref_imgs_right = cv2.imread("final_bag_right.png", cv2.IMREAD_UNCHANGED) # [H, W, 3] o [H, W, 4]
+    image_pil_right = Image.open("final_bag_right.png").convert("RGB")
 
     # generated caption
     if opt.text == None:
+        txt = []
         print("load blip2 for image caption...")
         processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
         blip_model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-opt-2.7b", torch_dtype=torch.float16).to("cuda")
-        inputs = processor(image_pil, return_tensors="pt").to("cuda", torch.float16)
-        out = blip_model.generate(**inputs)
-        caption = processor.batch_decode(out, skip_special_tokens=True)[0].strip()
-        caption = caption.replace("there is ", "")
-        caption = caption.replace("close up", "photo")
-        for d in ["black background", "white background"]:
-            if d in caption:
-                caption = caption.replace(d, "ground")
-        print("Caption: ", caption)
-        opt.text = caption
+        for image_pil in [image_pil_original,image_pil_right]:
+            inputs = processor(image_pil, return_tensors="pt").to("cuda", torch.float16)
+            out = blip_model.generate(**inputs)
+            caption = processor.batch_decode(out, skip_special_tokens=True)[0].strip()
+            caption = caption.replace("there is ", "")
+            caption = caption.replace("close up", "photo")
+            for d in ["black background", "white background"]:
+                if d in caption:
+                    caption = caption.replace(d, "ground")
+            print("Caption: ", caption)
+            # opt.text = caption
+            txt.append(caption)
+        if len(list(set(txt))) == 1:
+            opt.text = txt[0]
+        else:
+            opt.text = txt
 
     with open(os.path.join(opt.workspace, 'setting.txt'), 'w') as f:
         f.writelines('------------------ start ------------------' + '\n')
@@ -177,47 +233,24 @@ if __name__ == '__main__':
             f.writelines(eachArg + ' : ' + str(value) + '\n')
         f.writelines('------------------- end -------------------')
 
+    imgs_second, ref_imgs_right, ori_imgs_right = load_images_and_preprocess(ref_imgs_right, device)
+    imgs, ref_imgs, ori_imgs = load_images_and_preprocess(ref_imgs, device)
 
-    # only support alpha photo input.
-    imgs = cv2.cvtColor(ref_imgs, cv2.COLOR_BGRA2RGBA)
-    imgs = cv2.resize(imgs, (512, 512), interpolation=cv2.INTER_AREA)
-    ref_imgs = (torch.from_numpy(imgs)/255.).unsqueeze(0).permute(0, 3, 1, 2).to(device)
-    ori_imgs = ref_imgs[:, :3, :, :] * ref_imgs[:, 3:, :, :] + (1 - ref_imgs[:, 3:, :, :])
-    
-    mask = imgs[:, :, 3:]
-    # mask[mask < 0.5 * 255] = 0
-    # mask[mask >= 0.5 * 255] = 1 
-    kernel = np.ones(((5,5)), np.uint8) ##11
-    mask = cv2.erode(mask,kernel,iterations=1)
-    mask = (mask == 0)
-    mask = (torch.from_numpy(mask)).unsqueeze(0).unsqueeze(0).to(device)
-    depth_mask = mask
-    
-    # depth estimation
-    with torch.no_grad():
-        depth_prediction = depth_model.forward(depth_transform(ori_imgs))
-        depth_prediction = torch.nn.functional.interpolate(
-            depth_prediction.unsqueeze(1),
-            size=512,
-            mode="bicubic",
-            align_corners=True,
-        ) # [1, 1, 512, 512] [80~150]
-        DPT.util.io.write_depth_name(os.path.join(opt.workspace, opt.text.replace(" ", "_") + '_depth'), depth_prediction.squeeze().cpu().numpy(), bits=2)
-        disparity = imageio.imread(os.path.join(opt.workspace, opt.text.replace(" ", "_") + '_depth.png')) / 65535.
-        disparity = median_filter(disparity, size=5)
-        depth = 1. / np.maximum(disparity, 1e-2)
-    
-    depth_prediction = torch.tensor(depth, device=device)
-    depth_mask = torch.tensor(depth_mask, device=device)
-    # normalize estimated depth
-    depth_prediction = depth_prediction * (~depth_mask) + torch.ones_like(depth_prediction) * (depth_mask)
-    depth_prediction = ((depth_prediction - 1.0) / (depth_prediction.max() - 1.0)) * 0.9 + 0.1
-    # save_image(ori_imgs, os.path.join(opt.workspace, opt.text.replace(" ", "_") + '_ref.png'))
+    depth_mask = preprocess_mask(imgs)
+    depth_mask_right = preprocess_mask(imgs_second)
 
+    depth_mask, depth_prediction = get_depth_info(ori_imgs,depth_mask, name="original")
+    depth_mask_right, depth_prediction_right = get_depth_info(ori_imgs_right,depth_mask_right, name="right")
+    
+
+    if opt.text == None:
+        del blip_model
     model = NeRFNetwork(opt)
     trainer = Trainer('df', opt, model, depth_model, guidance, 
                         ref_imgs=ref_imgs, ref_depth=depth_prediction, 
-                        ref_mask=depth_mask, ori_imgs=ori_imgs, 
+                        ref_mask=depth_mask, ori_imgs=ori_imgs,
+                        ref_imgs_second=ref_imgs_right, ref_depth_second=depth_prediction_right, 
+                        ref_mask_second=depth_mask_right, ori_imgs_second=ori_imgs, 
                         device=device, workspace=opt.workspace, optimizer=optimizer, ema_decay=None, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint=opt.ckpt, eval_interval=opt.eval_interval, scheduler_update_every_step=True)
     
 
