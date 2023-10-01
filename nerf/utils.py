@@ -477,7 +477,7 @@ class Trainer(object):
         B, N = rays_o.shape[:2]
         H, W = data['H'], data['W']
 
-        if self.global_step < self.opt.albedo_iters or data['is_front']:
+        if self.global_step < self.opt.albedo_iters or data['is_front'] or data["is_back"]:
             shading = 'albedo'
             ambient_ratio = 1.0
         else: 
@@ -497,10 +497,16 @@ class Trainer(object):
         else:
             verbose = False
 
-        ref_imgs = self.ref_imgs
-        bg_color = torch.rand(3, device=self.ref_imgs.device) # [3], frame-wise random.
-        bg_img = bg_color.expand(1, 512, 512, 3).permute(0, 3, 1, 2).contiguous()
-        gt_rgb = ref_imgs[:, :3, :, :] * ref_imgs[:, 3:, :, :] + bg_img * (1 - ref_imgs[:, 3:, :, :])
+        def _get_image_colors(imgs):
+
+            ref_imgs = imgs
+            bg_color = torch.rand(3, device=imgs.device) # [3], frame-wise random.
+            bg_img = bg_color.expand(1, 512, 512, 3).permute(0, 3, 1, 2).contiguous()
+            gt_rgb = ref_imgs[:, :3, :, :] * ref_imgs[:, 3:, :, :] + bg_img * (1 - ref_imgs[:, 3:, :, :])
+            return gt_rgb, bg_color
+
+        gt_rgb, bg_color = _get_image_colors(self.ref_imgs)
+        gt_rgb_second, bg_color_second = _get_image_colors(self.ref_imgs_second)
 
         # bg_color = bg_color.expand((self.opt.h*self.opt.w, bg_color.shape[0]))
 
@@ -521,7 +527,7 @@ class Trainer(object):
             text_z = self.text_z[0]
             text = self.text[0]
         
-        if self.global_step < self.opt.diff_iters or data['is_front']:
+        if self.global_step < self.opt.diff_iters or data['is_front'] or data["is_back"]:
             loss = 0
             de_imgs = None
         else:
@@ -568,6 +574,13 @@ class Trainer(object):
             loss_depth = self.opt.lambda_depth * self.depth_loss(self.pearson, pred_depth, self.depth_prediction, ~self.depth_mask)
             if verbose:
                 print(f"loss_depth: {loss_depth}, loss_img: {loss_ref}")
+            loss_ref += loss_depth
+        
+        elif data['is_back']:
+            loss_ref = self.opt.lambda_img * self.img_loss(pred_rgb, gt_rgb_second)
+            loss_depth = self.opt.lambda_depth * self.depth_loss(self.pearson, pred_depth, self.depth_prediction_second, ~self.depth_mask_second)
+            if verbose:
+                print(f"back loss_depth: {loss_depth}, loss_img: {loss_ref}")
             loss_ref += loss_depth
 
         else:

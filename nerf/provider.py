@@ -162,6 +162,16 @@ def fix_poses(size, index, device, radius_range=[1, 1.5], theta_range=[0, 100], 
         phis = torch.ones(size, device=device) * (phi_range[1] - phi_range[0]) / 2 + phi_range[0]
         # phis = torch.ones(size, device=device) * phi_range[0]
         is_front = True
+        is_back = False
+        is_large = False
+
+    elif index % 2 == 0:
+        radius = torch.ones(size, device=device)
+        thetas = torch.ones(size, device=device) * (theta_range[1] - theta_range[0]) / 2 + theta_range[0]
+        phis = torch.ones(size, device=device) * (phi_range[1] - phi_range[0]) / 2 + phi_range[0]
+        # phis = torch.ones(size, device=device) * phi_range[0]
+        is_front = False
+        is_back = True
         is_large = False
 
     else:
@@ -182,6 +192,7 @@ def fix_poses(size, index, device, radius_range=[1, 1.5], theta_range=[0, 100], 
                 phis = torch.rand(size, device=device) * (np.deg2rad(240.0) - np.deg2rad(120.0)) + np.deg2rad(120.0)
             
         is_front = False
+        is_back = False
 
         rand_theta = torch.rand(size, device=device)
         thetas = rand_theta * (theta_range[1] - theta_range[0]) + theta_range[0]
@@ -215,7 +226,7 @@ def fix_poses(size, index, device, radius_range=[1, 1.5], theta_range=[0, 100], 
     poses[:, :3, :3] = torch.stack((right_vector, up_vector, forward_vector), dim=-1)
     poses[:, :3, 3] = centers
     
-    return thetas, phis, poses, is_front, is_large
+    return thetas, phis, poses, is_front, is_large, is_back
 
 
 def circle_poses(device, radius=1.0, theta=60, phi=0):
@@ -271,8 +282,8 @@ class NeRFDataset:
 
         if self.training:
             # random pose on the fly
-            thetas, phis, poses, is_front, is_large = fix_poses(B, index[0], self.device, radius_range=self.radius_range, theta_range=self.opt.theta_range, phi_range=self.opt.phi_range)
-            if is_front:
+            thetas, phis, poses, is_front, is_large, is_back = fix_poses(B, index[0], self.device, radius_range=self.radius_range, theta_range=self.opt.theta_range, phi_range=self.opt.phi_range)
+            if is_front or is_back:
                 fov = self.fov
             else:
                 fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
@@ -286,12 +297,14 @@ class NeRFDataset:
             
             thetas, phis, poses = circle_poses(self.device, radius=1.0, theta=theta, phi=phi)
             is_front = False
+            is_back = False
             is_large = False
             fov = self.fov      
         else:
             phi = (index[0] / self.size) * (self.opt.phi_range[1]-self.opt.phi_range[0]) + self.opt.phi_range[0]
             thetas, phis, poses = circle_poses(self.device, radius=1.0, theta=90, phi=phi)
             is_front = False
+            is_back = False
             is_large = False
             fov = self.fov
 
@@ -307,7 +320,7 @@ class NeRFDataset:
             'rays_d': rays['rays_d'],
             'depth_scale': rays['depth_scale'],
             'is_front': is_front,
-            # 'is_back': is_front,
+            'is_back': is_back,
             'is_large': is_large,
             'poses': poses,
             'thetas': thetas, 
